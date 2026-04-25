@@ -1,0 +1,23 @@
+{
+    "assistant_name": "Jarvis",
+    "user_name": "Sir",
+    "wake_word": "jarvis",
+    "voice_rate": 165,
+    "voice_volume": 1.0,
+    "voice_gender": "male",
+    "openai_api_key": "YOUR_OPENAI_API_KEY_HERE",
+    "openai_model": "gpt-3.5-turbo",
+    "use_openai": false,
+    "use_ollama": false,
+    "ollama_model": "llama3",
+    "music_folder": "C:/Users/YourUser/Music",
+    "browser": "chrome",
+    "log_conversations": true,
+    "max_memory_turns": 10,
+    "greeting_enabled": true,
+    "sound_effects": true,
+    "preferences": {
+        "theme": "dark",
+        "language": "en-US"
+    }
+}

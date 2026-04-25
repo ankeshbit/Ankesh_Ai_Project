@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# Configuration & Secrets
+.env
+config.json
+jarvis_alarms.json
+jarvis_todo.json
+jarvis_notes.txt
+
+# Logs
+logs/
+*.log
+
+# Web UI
+web_ui/node_modules/
+web_ui/dist/
+web_ui/.env
+.eslintcache
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Project Specific
+workspace_tts.wav
