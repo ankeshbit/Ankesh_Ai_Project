@@ -2,7 +2,7 @@
 test_jarvis.py
 --------------
 Quick test suite to validate core Jarvis modules without needing
-a microphone or OpenAI key. Run with:
+a microphone or Groq key. Run with:
 
     python test_jarvis.py
 """
@@ -110,7 +110,7 @@ class TestAIBrain(unittest.TestCase):
     def setUp(self):
         # Force offline/fallback mode for tests
         config = _default_config()
-        config["use_openai"] = False
+        config["use_groq"] = False
         self.brain = AIBrain(config)
 
     def test_ohms_law_response(self):

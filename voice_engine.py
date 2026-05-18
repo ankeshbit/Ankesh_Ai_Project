@@ -30,15 +30,16 @@ class VoiceEngine:
         self.recognizer = sr.Recognizer()
         self.microphone = sr.Microphone()
         
-        # Microphone fine-tuning for extreme responsiveness
-        self.recognizer.energy_threshold = 300 
+        # Microphone fine-tuning for more reliable capture across rooms and devices.
+        self.recognizer.energy_threshold = 250
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.6  # Drop from 0.8s to 0.6s to respond faster after user stops talking
+        self.recognizer.pause_threshold = 0.8
+        self.recognizer.non_speaking_duration = 0.5
 
         # Run ambient noise calibration exactly once on boot
         logger.info("Calibrating microphone for ambient noise... Please wait.")
         with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=1.5)
+            self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
         logger.info("Microphone calibration complete.")
         
         self.speaking = False
@@ -115,7 +116,11 @@ class VoiceEngine:
         """
         with self.microphone as source:
             try:
-                audio = self.recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=timeout,
+                    phrase_time_limit=phrase_limit,
+                )
             except sr.WaitTimeoutError:
                 return None
             except Exception as e:
@@ -204,8 +209,11 @@ class VoiceEngine:
         Returns:
             bool: True if wake word detected, False otherwise.
         """
-        text = self.listen(timeout=timeout, phrase_limit=5)
-        if text and wake_word.lower() in text:
-            logger.info(f"Wake word '{wake_word}' detected!")
-            return True
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            remaining = max(1, int(end_time - time.time()))
+            text = self.listen(timeout=remaining, phrase_limit=min(4, remaining))
+            if text and wake_word.lower() in text:
+                logger.info(f"Wake word '{wake_word}' detected!")
+                return True
         return False

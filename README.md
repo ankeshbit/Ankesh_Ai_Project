@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-JARVIS is a sophisticated, futuristic AI voice assistant inspired by the Marvel Cinematic Universe. It features a dual-interface system (Desktop HUD and Modern Web Dashboard), natural language processing via OpenAI/Ollama, and a wide array of system automation capabilities.
+JARVIS is a sophisticated, futuristic AI voice assistant inspired by the Marvel Cinematic Universe. It features a dual-interface system (Desktop HUD and Modern Web Dashboard), natural language processing via Groq/Ollama, and a wide array of system automation capabilities.
 
 ![JARVIS UI Preview](https://github.com/placeholder-ui-preview.png)
 
@@ -13,7 +13,7 @@ JARVIS is a sophisticated, futuristic AI voice assistant inspired by the Marvel 
   - **Desktop HUD**: A futuristic PyQt6 holographic interface with a pulsing AI core.
   - **Web Dashboard**: A modern, glassmorphic React dashboard with real-time waveform visualization.
 - **Voice-First Interaction**: Fully hands-free activation using the "Jarvis" wake word.
-- **Intelligence**: Integrated with OpenAI GPT-3.5/4 and local Ollama (Llama 3) for deep reasoning.
+- **Intelligence**: Integrated with Groq-hosted models and local Ollama (Llama 3) for deep reasoning.
 - **System Automation**: Launch apps, search the web, take screenshots, and monitor system stats (CPU, RAM, Battery).
 - **Active Alarms & Timers**: Real-time background monitoring for alarms and countdowns.
 - **Productivity**: Integrated To-Do lists and voice-timestamped notes.
@@ -42,10 +42,11 @@ cd ..
 ```
 
 ### 4. Configuration
-Rename `config.sample.json` to `config.json` and add your API keys:
+ Rename `config.sample.json` to `config.json` and add your API keys:
 ```json
 {
-    "openai_api_key": "your_key_here",
+  "groq_api_key": "your_key_here",
+  "groq_model": "llama-3.1-8b-instant",
     "user_name": "Ankesh"
 }
 ```
@@ -76,7 +77,7 @@ Then navigate to `http://localhost:8000`.
 - `server.py`: Entry point for the Web Server & API.
 - `alarm_manager.py`: Background service for alarms/timers.
 - `voice_engine.py`: Text-to-Speech and Speech-to-Text orchestration.
-- `ai_brain.py`: LLM integration (OpenAI/Ollama).
+- `ai_brain.py`: LLM integration (Groq/Ollama).
 - `command_handler.py`: Intent parsing and system automation logic.
 - `web_ui/`: React-based modern dashboard frontend.
 

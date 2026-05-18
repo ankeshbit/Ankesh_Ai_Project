@@ -1,30 +1,23 @@
 """
 ai_brain.py
 -----------
-Manages AI conversation logic using OpenAI GPT API.
-Falls back to a built-in rule-based engine if OpenAI is not configured.
+Manages AI conversation logic using the Groq API.
+Falls back to a built-in rule-based engine if Groq is not configured.
 Maintains short-term conversation memory (rolling window).
 """
 
 import logging
 import datetime
 from collections import deque
+import requests
 
 logger = logging.getLogger(__name__)
-
-# ─── Attempt OpenAI Import ───────────────────────────────────────────────────
-try:
-    from openai import OpenAI, AuthenticationError, RateLimitError
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    logger.warning("openai package not installed. Using fallback brain.")
 
 
 class AIBrain:
     """
     Core intelligence module for Jarvis.
-    - Uses OpenAI GPT for natural language understanding if API key is set.
+    - Uses Groq-compatible chat completions for natural language understanding if API key is set.
     - Falls back to rule-based responses for common engineering/general queries.
     - Maintains a rolling conversation memory window.
     """
@@ -39,10 +32,19 @@ class AIBrain:
         "Never break character."
     )
 
+    DEFAULT_GROQ_MODELS = (
+        "llama-3.1-8b-instant",
+        "llama3-8b-8192",
+        "llama3-70b-8192",
+    )
+
     def __init__(self, config: dict):
         self.config = config
-        self.use_openai = config.get("use_openai", False) and OPENAI_AVAILABLE
-        self.model = config.get("openai_model", "gpt-3.5-turbo")
+        self.use_groq = config.get("use_groq", config.get("use_openai", False))
+        self.model_candidates = self._build_groq_model_candidates(config)
+        self.model = self.model_candidates[0]
+        self.api_key = config.get("groq_api_key", config.get("openai_api_key", ""))
+        self._chat_url = "https://api.groq.com/openai/v1/chat/completions"
         self.use_ollama = config.get("use_ollama", False)
         self.ollama_model = config.get("ollama_model", "llama3")
         self.max_memory = config.get("max_memory_turns", 10)
@@ -50,15 +52,25 @@ class AIBrain:
         # Rolling conversation history (user + assistant pairs)
         self.memory: deque = deque(maxlen=self.max_memory * 2)
 
-        self._client = None
-        if self.use_openai:
-            api_key = config.get("openai_api_key", "")
-            if api_key and api_key != "YOUR_OPENAI_API_KEY_HERE":
-                self._client = OpenAI(api_key=api_key)
-                logger.info("OpenAI brain initialized (SDK v2).")
+        if self.use_groq:
+            if self.api_key and self.api_key not in {"YOUR_GROQ_API_KEY_HERE", "YOUR_OPENAI_API_KEY_HERE"}:
+                logger.info("Groq brain initialized.")
             else:
-                logger.warning("No valid OpenAI key. Switching to fallback brain.")
-                self.use_openai = False
+                logger.warning("No valid Groq key. Switching to fallback brain.")
+                self.use_groq = False
+
+    def _build_groq_model_candidates(self, config: dict) -> list[str]:
+        preferred_model = config.get("groq_model", config.get("openai_model", "llama-3.1-8b-instant"))
+        configured_candidates = config.get("groq_model_candidates", [])
+
+        ordered_models = [preferred_model, *configured_candidates, *self.DEFAULT_GROQ_MODELS]
+        seen: set[str] = set()
+        unique_models: list[str] = []
+        for model in ordered_models:
+            if model and model not in seen:
+                unique_models.append(model)
+                seen.add(model)
+        return unique_models
 
     def ask(self, user_input: str) -> str:
         """
@@ -75,8 +87,8 @@ class AIBrain:
 
         response = None
         
-        if self.use_openai:
-            response = self._ask_openai()
+        if self.use_groq:
+            response = self._ask_groq()
             
         if not response and self.use_ollama:
             response = self._ask_ollama()
@@ -88,30 +100,80 @@ class AIBrain:
         self.memory.append({"role": "assistant", "content": response})
         return response
 
-    def _ask_openai(self) -> str:
-        """Send conversation history to OpenAI and get a reply (SDK v2)."""
-        try:
-            messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
-            messages.extend(list(self.memory))
+    def _ask_groq(self) -> str:
+        """Send conversation history to Groq and get a reply."""
+        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        messages.extend(list(self.memory))
 
-            chat = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.75,
-                max_tokens=300,
-            )
-            reply = chat.choices[0].message.content.strip()
-            logger.info(f"[OpenAI Response] {reply}")
-            return reply
-        except AuthenticationError:
-            logger.error("OpenAI Authentication failed. Check your API key. Falling through.")
-            return None
-        except RateLimitError:
-            logger.error("OpenAI rate limit exceeded. Falling through.")
-            return None
-        except Exception as e:
-            logger.error(f"OpenAI error: {e}. Falling through.")
-            return None
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        for model in self.model_candidates:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.75,
+                    "max_tokens": 300,
+                }
+                response = requests.post(self._chat_url, json=payload, headers=headers, timeout=20)
+
+                if response.status_code == 401:
+                    logger.error("Groq authentication failed. Check your API key. Falling through.")
+                    return None
+
+                if response.status_code == 429:
+                    logger.error("Groq rate limit exceeded. Falling through.")
+                    return None
+
+                if response.status_code == 400:
+                    error_data = self._extract_groq_error(response)
+                    if self._should_try_next_groq_model(error_data):
+                        logger.warning(
+                            f"Groq model '{model}' is unavailable. Trying next supported model."
+                        )
+                        continue
+                    response.raise_for_status()
+
+                response.raise_for_status()
+                data = response.json()
+                reply = data["choices"][0]["message"]["content"].strip()
+                logger.info(f"[Groq Response:{model}] {reply}")
+                self.model = model
+                return reply
+
+            except requests.RequestException as e:
+                logger.error(f"Groq request failed for model '{model}': {e}. Falling through.")
+            except (KeyError, IndexError, ValueError, TypeError) as e:
+                logger.error(f"Groq response parsing failed for model '{model}': {e}. Falling through.")
+                return None
+            except Exception as e:
+                logger.error(f"Groq error for model '{model}': {e}. Falling through.")
+                return None
+
+        logger.error("All Groq model candidates failed. Falling through.")
+        return None
+
+    def _extract_groq_error(self, response: requests.Response) -> dict:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload.get("error", payload)
+        except ValueError:
+            pass
+        return {}
+
+    def _should_try_next_groq_model(self, error_data: dict) -> bool:
+        error_code = str(error_data.get("code", "")).lower()
+        message = str(error_data.get("message", "")).lower()
+        return (
+            error_code == "model_decommissioned"
+            or "decommissioned" in message
+            or "no longer supported" in message
+            or "model" in message and "not found" in message
+        )
 
     def _ask_ollama(self) -> str | None:
         """Send conversation history to local Ollama instance."""
@@ -150,7 +212,7 @@ class AIBrain:
 
     def _ask_fallback(self, text: str) -> str:
         """
-        Rule-based fallback brain when OpenAI is unavailable.
+        Rule-based fallback brain when Groq is unavailable.
         Handles engineering, math, and general queries locally.
         """
         text = text.lower().strip()
@@ -242,7 +304,7 @@ class AIBrain:
         # ─── Default ──────────────────────────────────────────────────────
         return (
             f"That's an interesting query, {name}. Unfortunately, my offline reasoning module "
-            "has limited scope. For deeper insights, I'd recommend enabling my OpenAI integration."
+            "has limited scope. For deeper insights, enable Groq in config.json by setting use_groq to true and providing a groq_api_key."
         )
 
     def _try_math(self, text: str) -> str | None:

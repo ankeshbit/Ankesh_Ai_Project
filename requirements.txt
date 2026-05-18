@@ -8,10 +8,10 @@ pyttsx3>=2.90                      # Offline text-to-speech engine
 pyaudio>=0.2.14                    # Microphone input (required by SpeechRecognition)
 
 # ─── AI / LLM ─────────────────────────────────────────────────────────────────
-openai>=0.27.0                     # OpenAI GPT API for natural language responses
+# Groq API is accessed via requests against the OpenAI-compatible endpoint.
 
 # ─── System & Utilities ───────────────────────────────────────────────────────
-requests>=2.31.0                   # HTTP requests (used by openai internally)
+requests>=2.31.0                   # HTTP requests used by the Groq chat API client flow
 python-dotenv>=1.0.0               # Optional: load API keys from .env file
 wikipedia>=1.4.0                   # General knowledge and data fallback
 psutil>=5.9.0                      # System stats (CPU, RAM, Battery)
