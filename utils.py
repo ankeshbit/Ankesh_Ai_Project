@@ -1,7 +1,7 @@
 """
 utils.py
 --------
-Utility functions for Jarvis:
+Utility functions for Nova:
 - Config loading/saving
 - Conversation logging
 - User preferences management
@@ -29,7 +29,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
     """
-    Load the Jarvis configuration from config.json.
+    Load the Nova configuration from config.json.
 
     Returns:
         dict: Parsed configuration dictionary.
@@ -63,9 +63,9 @@ def save_config(config: dict, path: Path = CONFIG_PATH):
 def _default_config() -> dict:
     """Minimal default config if config.json is missing."""
     return {
-        "assistant_name": "Jarvis",
+        "assistant_name": "Nova",
         "user_name": "Sir",
-        "wake_word": "jarvis",
+        "wake_word": "nova",
         "voice_rate": 165,
         "voice_volume": 1.0,
         "voice_gender": "male",
@@ -111,7 +111,7 @@ def get_greeting(config: dict) -> str:
     """
     hour = datetime.datetime.now().hour
     name = config.get("user_name", "Sir")
-    assistant = config.get("assistant_name", "Jarvis")
+    assistant = config.get("assistant_name", "Nova")
 
     if 5 <= hour < 12:
         salutation = "Good morning"
@@ -138,7 +138,7 @@ def log_conversation(user_text: str, assistant_text: str):
 
     Args:
         user_text (str): What the user said.
-        assistant_text (str): Jarvis's response.
+        assistant_text (str): Nova's response.
     """
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -147,7 +147,7 @@ def log_conversation(user_text: str, assistant_text: str):
     entry = (
         f"[{timestamp}]\n"
         f"  USER    : {user_text}\n"
-        f"  JARVIS  : {assistant_text}\n"
+        f"  NOVA    : {assistant_text}\n"
         f"{'─' * 60}\n"
     )
 
@@ -206,7 +206,7 @@ def setup_logging(level: str = "INFO"):
         level (str): Logging level — DEBUG, INFO, WARNING, ERROR.
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
-    log_file = LOG_DIR / f"jarvis_{datetime.date.today()}.log"
+    log_file = LOG_DIR / f"nova_{datetime.date.today()}.log"
 
     logging.basicConfig(
         level=log_level,

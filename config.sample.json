@@ -1,7 +1,7 @@
 {
-    "assistant_name": "Jarvis",
+    "assistant_name": "Nova",
     "user_name": "Sir",
-    "wake_word": "jarvis",
+    "wake_word": "nova",
     "voice_rate": 165,
     "voice_volume": 1.0,
     "voice_gender": "male",

@@ -106,12 +106,12 @@ function App() {
   };
 
   return (
-    <div className="jarvis-container">
+    <div className="nova-container">
       {/* HEADER SECTION */}
       <header className="header">
         <div className="logo-section">
           <div className="logo-icon"></div>
-          <div className="logo-text">JARVIS</div>
+          <div className="logo-text">Nova</div>
         </div>
         
         <div className="stats-grid">

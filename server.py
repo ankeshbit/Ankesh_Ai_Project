@@ -17,7 +17,7 @@ from alarm_manager import AlarmManager
 setup_logging("INFO")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Jarvis Web Assistant")
+app = FastAPI(title="Nova Web Assistant")
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,7 +74,7 @@ manager = ConnectionManager()
 
 @app.post("/api/stt")
 async def process_audio(file: UploadFile = File(...)):
-    """Receives audio file from frontend, processes it, and returns Jarvis's response text and audio."""
+    """Receives audio file from frontend, processes it, and returns Nova's response text and audio."""
     try:
         audio_bytes = await file.read()
         
@@ -101,7 +101,7 @@ async def process_audio(file: UploadFile = File(...)):
             brain.clear_memory()
             
         if commands.is_exit_command(user_text):
-            response = "Goodbye, Sir. Jarvis signing off."
+            response = "Goodbye, Sir. Nova signing off."
             
         # 4. Generate TTS
         await manager.broadcast({"status": "Speaking", "type": "bot", "text": response})

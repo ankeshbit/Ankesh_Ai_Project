@@ -1,5 +1,5 @@
 # requirements.txt
-# Jarvis AI Voice Assistant — Python Dependencies
+# Nova AI Voice Assistant — Python Dependencies
 # Install with: pip install -r requirements.txt
 
 # ─── Core Voice ───────────────────────────────────────────────────────────────

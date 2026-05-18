@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QRadialGradient, QPainterPath
 
-class JarvisCoreWidget(QWidget):
+class NovaCoreWidget(QWidget):
     """Movie-accurate holographic AI core visualizer."""
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,7 +126,7 @@ class JarvisCoreWidget(QWidget):
         painter.end()
 
 
-class JarvisGUI(QWidget):
+class NovaGUI(QWidget):
     """
     Frameless holographic AI UI without scrolling chat logs. 
     Focuses entirely on the immersive voice visualizer.
@@ -186,7 +186,7 @@ class JarvisGUI(QWidget):
         bg_layout.addWidget(self.status_label)
 
         # --- HOLOGRAPHIC CORE ---
-        self.core = JarvisCoreWidget()
+        self.core = NovaCoreWidget()
         bg_layout.addWidget(self.core)
 
         # --- CAPTIONS (Optional replacement for Chat Log) ---

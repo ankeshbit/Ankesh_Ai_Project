@@ -67,8 +67,8 @@ class CommandHandler:
         self.alarm_manager = alarm_manager
         self.name = config.get("user_name", "Sir")
         self.music_folder = config.get("music_folder", str(Path.home() / "Music"))
-        self.todo_file = Path.home() / "jarvis_todo.json"
-        self.notes_file = Path.home() / "jarvis_notes.txt"
+        self.todo_file = Path.home() / "nova_todo.json"
+        self.notes_file = Path.home() / "nova_notes.txt"
 
     def handle(self, text: str) -> tuple[str, bool]:
         """
@@ -178,8 +178,8 @@ class CommandHandler:
                 return self._clear_alarms(), True
 
         # ── Close / Exit ─────────────────────────────────────────────────────
-        if self._match(text, ["goodbye", "bye", "exit", "quit", "shut yourself down", "sleep mode", "close yourself", "close jarvis", "turn off", "terminate"]):
-            return f"Goodbye, {self.name}. Jarvis signing off. Stay extraordinary.", False
+        if self._match(text, ["goodbye", "bye", "exit", "quit", "shut yourself down", "sleep mode", "close yourself", "close nova", "turn off", "terminate"]):
+            return f"Goodbye, {self.name}. Nova signing off. Stay extraordinary.", False
 
         return "", False  # Not handled — pass to AI brain
 
@@ -327,7 +327,7 @@ class CommandHandler:
         try:
             import pyautogui
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = Path.home() / f"jarvis_screenshot_{timestamp}.png"
+            save_path = Path.home() / f"nova_screenshot_{timestamp}.png"
             pyautogui.screenshot(str(save_path))
             return f"Screenshot saved to {save_path}, {self.name}."
         except ImportError:
@@ -528,5 +528,5 @@ class CommandHandler:
 
     def is_exit_command(self, text: str) -> bool:
         """Check if user said something to quit the assistant."""
-        exits = ["goodbye", "bye", "exit", "quit", "shut yourself down", "sleep mode", "goodbye jarvis", "close yourself", "close jarvis", "turn off", "terminate"]
+        exits = ["goodbye", "bye", "exit", "quit", "shut yourself down", "sleep mode", "goodbye nova", "close yourself", "close nova", "turn off", "terminate"]
         return any(w in text.lower() for w in exits)

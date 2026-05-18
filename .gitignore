@@ -28,9 +28,9 @@ ENV/
 # Configuration & Secrets
 .env
 config.json
-jarvis_alarms.json
-jarvis_todo.json
-jarvis_notes.txt
+nova_alarms.json
+nova_todo.json
+nova_notes.txt
 
 # Logs
 logs/

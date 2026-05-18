@@ -4,27 +4,29 @@ ai_brain.py
 Manages AI conversation logic using the Groq API.
 Falls back to a built-in rule-based engine if Groq is not configured.
 Maintains short-term conversation memory (rolling window).
+Includes ChromaDB RAG for long-term memory and context retrieval.
 """
 
 import logging
 import datetime
 from collections import deque
 import requests
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 class AIBrain:
     """
-    Core intelligence module for Jarvis.
+    Core intelligence module for Nova.
     - Uses Groq-compatible chat completions for natural language understanding if API key is set.
     - Falls back to rule-based responses for common engineering/general queries.
     - Maintains a rolling conversation memory window.
     """
 
-    # System personality prompt — defines Jarvis's character
+    # System personality prompt — defines Nova's character
     SYSTEM_PROMPT = (
-        "You are Jarvis, a highly intelligent, sophisticated AI assistant — "
+        "You are Nova, a highly intelligent, sophisticated AI assistant — "
         "inspired by the AI from Iron Man. You speak with calm confidence, precision, "
         "and a hint of dry wit. You address the user respectfully. "
         "You are knowledgeable in electronics, electrical engineering, physics, math, "
@@ -52,6 +54,32 @@ class AIBrain:
         # Rolling conversation history (user + assistant pairs)
         self.memory: deque = deque(maxlen=self.max_memory * 2)
 
+        # Initialize ChromaDB for RAG memory
+        try:
+            import chromadb
+            from sentence_transformers import SentenceTransformer
+            
+            # Use persistent storage in .rag_memory directory
+            self.rag_db_path = Path.home() / ".nova_rag_memory"
+            self.rag_db_path.mkdir(exist_ok=True)
+            
+            self.chroma_client = chromadb.PersistentClient(path=str(self.rag_db_path))
+            self.rag_collection = self.chroma_client.get_or_create_collection(
+                name="nova_exchanges",
+                metadata={"hnsw:space": "cosine"}
+            )
+            
+            # Initialize sentence transformer for embeddings
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.rag_enabled = True
+            logger.info("ChromaDB RAG memory initialized successfully.")
+        except ImportError:
+            logger.warning("ChromaDB or sentence-transformers not installed. RAG memory disabled.")
+            self.rag_enabled = False
+        except Exception as e:
+            logger.warning(f"Failed to initialize ChromaDB RAG: {e}. RAG memory disabled.")
+            self.rag_enabled = False
+
         if self.use_groq:
             if self.api_key and self.api_key not in {"YOUR_GROQ_API_KEY_HERE", "YOUR_OPENAI_API_KEY_HERE"}:
                 logger.info("Groq brain initialized.")
@@ -74,35 +102,49 @@ class AIBrain:
 
     def ask(self, user_input: str) -> str:
         """
-        Process user input and return Jarvis's response.
+        Process user input and return Nova's response.
+        Retrieves similar past exchanges from RAG memory before LLM call.
 
         Args:
             user_input (str): The text from the user.
 
         Returns:
-            str: Jarvis's generated response.
+            str: Nova's generated response.
         """
         # Save user message to memory
         self.memory.append({"role": "user", "content": user_input})
 
+        # Retrieve similar past exchanges from RAG memory for context
+        rag_context = self._retrieve_rag_context(user_input)
+
         response = None
         
         if self.use_groq:
-            response = self._ask_groq()
+            response = self._ask_groq(rag_context)
             
         if not response and self.use_ollama:
-            response = self._ask_ollama()
+            response = self._ask_ollama(rag_context)
             
         if not response:
             response = self._ask_fallback(user_input)
 
         # Save assistant reply to memory
         self.memory.append({"role": "assistant", "content": response})
+        
+        # Store the exchange in RAG memory
+        self._store_rag_exchange(user_input, response)
+        
         return response
 
-    def _ask_groq(self) -> str:
+    def _ask_groq(self, rag_context: str = "") -> str:
         """Send conversation history to Groq and get a reply."""
-        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        system_prompt = self.SYSTEM_PROMPT
+        
+        # Inject RAG context into system prompt if available
+        if rag_context:
+            system_prompt = f"{self.SYSTEM_PROMPT}\n\n[Related Past Context]\n{rag_context}"
+        
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(list(self.memory))
 
         headers = {
@@ -175,14 +217,20 @@ class AIBrain:
             or "model" in message and "not found" in message
         )
 
-    def _ask_ollama(self) -> str | None:
+    def _ask_ollama(self, rag_context: str = "") -> str | None:
         """Send conversation history to local Ollama instance."""
         import urllib.request
         import urllib.error
         import json
         
         try:
-            messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+            system_prompt = self.SYSTEM_PROMPT
+            
+            # Inject RAG context into system prompt if available
+            if rag_context:
+                system_prompt = f"{self.SYSTEM_PROMPT}\n\n[Related Past Context]\n{rag_context}"
+            
+            messages = [{"role": "system", "content": system_prompt}]
             messages.extend(list(self.memory))
             
             payload = {
@@ -267,7 +315,7 @@ class AIBrain:
         if "how are you" in text:
             return f"All systems are operating at peak efficiency, {name}. Ready to assist."
         if "your name" in text or "who are you" in text:
-            return f"I am Jarvis — Just A Rather Very Intelligent System. At your service, {name}."
+            return f"I am Nova — Just A Rather Versatile Intelligent Organization. At your service, {name}."
         if "thank" in text:
             return f"It's what I'm here for, {name}. Always."
         if "joke" in text:
@@ -328,7 +376,84 @@ class AIBrain:
                 pass
         return None
 
+    def _retrieve_rag_context(self, user_input: str) -> str:
+        """
+        Retrieve top 3 similar past exchanges from RAG memory.
+        Returns formatted context to inject into system prompt.
+        """
+        if not self.rag_enabled or self.rag_collection.count() == 0:
+            return ""
+        
+        try:
+            # Embed the user input
+            user_embedding = self.embedding_model.encode(user_input).tolist()
+            
+            # Query the collection for top 3 similar exchanges
+            results = self.rag_collection.query(
+                query_embeddings=[user_embedding],
+                n_results=3,
+                include=["documents", "metadatas"]
+            )
+            
+            if not results["documents"] or not results["documents"][0]:
+                return ""
+            
+            # Format the retrieved context
+            context_parts = []
+            for doc, metadata in zip(results["documents"][0], results["metadatas"][0]):
+                context_parts.append(f"Q: {metadata.get('user_message', '')}\nA: {doc}")
+            
+            context = "\n\n".join(context_parts)
+            logger.debug(f"Retrieved RAG context: {context[:100]}...")
+            return context
+        except Exception as e:
+            logger.debug(f"Error retrieving RAG context: {e}")
+            return ""
+
+    def _store_rag_exchange(self, user_message: str, assistant_response: str):
+        """
+        Store a user-assistant exchange in RAG memory.
+        """
+        if not self.rag_enabled:
+            return
+        
+        try:
+            # Embed the user message
+            user_embedding = self.embedding_model.encode(user_message).tolist()
+            
+            # Generate a unique ID based on timestamp
+            exchange_id = f"exchange_{int(datetime.datetime.now().timestamp() * 1000)}"
+            
+            # Store the exchange with metadata
+            self.rag_collection.add(
+                ids=[exchange_id],
+                embeddings=[user_embedding],
+                documents=[assistant_response],
+                metadatas=[{
+                    "user_message": user_message,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }]
+            )
+            logger.debug(f"Stored RAG exchange: {exchange_id}")
+        except Exception as e:
+            logger.debug(f"Error storing RAG exchange: {e}")
+
+    
+
     def clear_memory(self):
-        """Clear the conversation memory buffer."""
+        """Clear the conversation memory buffer and RAG memory."""
         self.memory.clear()
         logger.info("Conversation memory cleared.")
+        
+        # Clear RAG memory (ChromaDB collection)
+        if self.rag_enabled:
+            try:
+                # Delete and recreate the collection to clear it
+                self.chroma_client.delete_collection(name="nova_exchanges")
+                self.rag_collection = self.chroma_client.get_or_create_collection(
+                    name="nova_exchanges",
+                    metadata={"hnsw:space": "cosine"}
+                )
+                logger.info("RAG memory cleared.")
+            except Exception as e:
+                logger.warning(f"Failed to clear RAG memory: {e}")

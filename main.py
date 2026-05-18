@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Jarvis AI Voice Assistant — Entry Point
+Nova AI Voice Assistant — Entry Point
 Orchestrates the voice engine, AI brain, command handler, and GUI.
 
 Run:
@@ -9,8 +9,8 @@ Run:
     python main.py --no-gui     → Terminal-only mode
     python main.py --text       → Text input mode (no mic)
 
-Wake Word: Say "Jarvis" to activate
-Exit:      Say "Goodbye Jarvis" or close the window
+Wake Word: Say "Nova" to activate
+Exit:      Say "Goodbye Nova" or close the window
 """
 
 import sys
@@ -33,7 +33,7 @@ from utils import load_config, get_greeting, log_conversation, sanitize_text, se
 from voice_engine import VoiceEngine
 from command_handler import CommandHandler
 from ai_brain import AIBrain
-from gui import JarvisGUI
+from gui import NovaGUI
 from alarm_manager import AlarmManager
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
@@ -49,30 +49,30 @@ BANNER = r"""
 | |_| | | | | | \ \ \__/ |___|____/
  \___/|_| |_|_|  \_\
 
-   Just A Rather Very Intelligent System
-   --------------------------------------
+   Just A Rather Versatile Intelligent Organization
+   -----------------------------------------------
    Version 2.0  |  AI Voice Assistant
 """
 
 
-class Jarvis:
+class Nova:
     """
-    Main controller class for the Jarvis assistant.
+    Main controller class for the Nova assistant.
     Manages the interaction loop, coordinates modules, and handles
     the threading model between GUI and voice listener.
     """
 
-    def __init__(self, config: dict, gui: JarvisGUI | None = None, text_mode: bool = False):
+    def __init__(self, config: dict, gui: NovaGUI | None = None, text_mode: bool = False):
         self.config = config
         self.gui = gui
         self.text_mode = text_mode
         self.running = True
-        self.wake_word = config.get("wake_word", "jarvis")
+        self.wake_word = config.get("wake_word", "nova")
         self.name = config.get("user_name", "Sir")
         self.log_enabled = config.get("log_conversations", True)
 
         # Initialize core modules
-        logger.info("Initializing Jarvis modules...")
+        logger.info("Initializing Nova modules...")
         self.alarm_manager = config.get("alarm_manager") # Passed from main
         self.voice = VoiceEngine(config)
         self.brain = AIBrain(config)
@@ -131,7 +131,7 @@ class Jarvis:
                 # ── Listen for Command ─────────────────────────────────────
                 user_text = self._listen_with_retry(max_retries)
                 if not user_text:
-                    self._respond("I didn't catch that. Please say 'Jarvis' to try again.")
+                    self._respond("I didn't catch that. Please say 'Nova' to try again.")
                     continue
 
                 self._handle_input(user_text)
@@ -202,7 +202,7 @@ class Jarvis:
 
         # ── Exit Check ────────────────────────────────────────────────────
         if self.commands.is_exit_command(user_text):
-            farewell = f"Goodbye, {self.name}. Jarvis, signing off."
+            farewell = f"Goodbye, {self.name}. Nova, signing off."
             self._respond(farewell)
             self.shutdown()
             return
@@ -234,7 +234,7 @@ class Jarvis:
             is_greeting (bool): If True, display as system message in GUI.
         """
         clean_text = sanitize_text(text)
-        print(f"\n[Jarvis]: {clean_text}\n")
+        print(f"\n[Nova]: {clean_text}\n")
 
         if self.gui:
             role = "system" if is_greeting else "bot"
@@ -285,7 +285,7 @@ class Jarvis:
 
     def shutdown(self):
         """Gracefully stop all modules and exit."""
-        logger.info("Jarvis shutdown initiated.")
+        logger.info("Nova shutdown initiated.")
         self.running = False
 
         if self.gui:
@@ -300,7 +300,7 @@ class Jarvis:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Jarvis AI Voice Assistant")
+    parser = argparse.ArgumentParser(description="Nova AI Voice Assistant")
     parser.add_argument("--no-gui", action="store_true", help="Run without GUI (terminal only)")
     parser.add_argument("--text", action="store_true", help="Use text input instead of microphone")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
@@ -315,7 +315,7 @@ def main():
 
     # Load configuration
     config = load_config()
-    logger.info(f"Loaded config for assistant: '{config.get('assistant_name', 'Jarvis')}'")
+    logger.info(f"Loaded config for assistant: '{config.get('assistant_name', 'Nova')}'")
 
     gui = None
     text_mode = args.text
@@ -327,22 +327,22 @@ def main():
         config["alarm_manager"] = alarm_manager
 
         app = QApplication(sys.argv)
-        gui = JarvisGUI(config)
+        gui = NovaGUI(config)
 
-        jarvis = Jarvis(config, gui=gui, text_mode=text_mode)
-        alarm_manager.set_callback(jarvis.on_alarm_trigger)
+        nova = Nova(config, gui=gui, text_mode=text_mode)
+        alarm_manager.set_callback(nova.on_alarm_trigger)
         alarm_manager.start()
 
         # Connect GUI submit signal safely to a new threaded execution of handle_input
         gui.sig_text_submit.connect(
-            lambda text: threading.Thread(target=jarvis._handle_input, args=(text,), daemon=True).start()
+            lambda text: threading.Thread(target=nova._handle_input, args=(text,), daemon=True).start()
         )
         
         # Shutdown hook
         gui.sig_shutdown.connect(app.quit)
 
-        # Run Jarvis in a background thread so PyQt GUI runs on main thread
-        bot_thread = threading.Thread(target=jarvis.start, daemon=True)
+        # Run Nova in a background thread so PyQt GUI runs on main thread
+        bot_thread = threading.Thread(target=nova.start, daemon=True)
         bot_thread.start()
 
         gui.show()
@@ -354,13 +354,13 @@ def main():
         alarm_manager = AlarmManager()
         config["alarm_manager"] = alarm_manager
 
-        jarvis = Jarvis(config, gui=None, text_mode=text_mode)
-        alarm_manager.set_callback(jarvis.on_alarm_trigger)
+        nova = Nova(config, gui=None, text_mode=text_mode)
+        alarm_manager.set_callback(nova.on_alarm_trigger)
         alarm_manager.start()
 
         # Graceful Ctrl+C
-        signal.signal(signal.SIGINT, lambda *_: jarvis.shutdown())
-        jarvis.start()
+        signal.signal(signal.SIGINT, lambda *_: nova.shutdown())
+        nova.start()
 
 
 if __name__ == "__main__":

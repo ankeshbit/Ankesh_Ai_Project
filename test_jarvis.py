@@ -1,10 +1,10 @@
 """
-test_jarvis.py
---------------
-Quick test suite to validate core Jarvis modules without needing
+test_nova.py
+-----------
+Quick test suite to validate core Nova modules without needing
 a microphone or Groq key. Run with:
 
-    python test_jarvis.py
+    python test_nova.py
 """
 
 import unittest
@@ -98,7 +98,7 @@ class TestCommandHandler(unittest.TestCase):
         self.assertFalse(handled)
 
     def test_exit_detection(self):
-        self.assertTrue(self.handler.is_exit_command("goodbye jarvis"))
+        self.assertTrue(self.handler.is_exit_command("goodbye nova"))
         self.assertTrue(self.handler.is_exit_command("bye"))
         self.assertFalse(self.handler.is_exit_command("what time is it"))
 
@@ -144,6 +144,6 @@ class TestAIBrain(unittest.TestCase):
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  JARVIS — Test Suite")
+    print("  Nova — Test Suite")
     print("=" * 55)
     unittest.main(verbosity=2)

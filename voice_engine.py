@@ -59,7 +59,7 @@ class VoiceEngine:
             if text is None: break
             try:
                 self.speaking = True
-                logger.info(f"[Jarvis Speaking API]: {text}")
+                logger.info(f"[Nova Speaking API]: {text}")
                 
                 # Sanitize text for console string parsing
                 clean_text = text.replace("'", "").replace('"', "")
@@ -101,7 +101,7 @@ class VoiceEngine:
         if not text:
             return
         self.tts_queue.put(text)
-        self.tts_queue.join()  # Block so microphone doesn't listen to Jarvis's own voice
+        self.tts_queue.join()  # Block so microphone doesn't listen to Nova's own voice
 
     def listen(self, timeout: int = 5, phrase_limit: int = 15) -> str | None:
         """
@@ -198,7 +198,7 @@ class VoiceEngine:
             logger.error(f"TTS generation error: {e}")
             return ""
 
-    def listen_for_wake_word(self, wake_word: str = "jarvis", timeout: int = 8) -> bool:
+    def listen_for_wake_word(self, wake_word: str = "nova", timeout: int = 8) -> bool:
         """
         Continuously listen until the wake word is detected.
 

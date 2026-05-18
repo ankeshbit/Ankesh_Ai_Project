@@ -9,12 +9,12 @@ logger = logging.getLogger(__name__)
 
 class AlarmManager:
     """
-    Manages active alarms and timers for Jarvis.
+    Manages active alarms and timers for Nova.
     Handles background monitoring and persistence.
     """
     def __init__(self, storage_path: Path = None):
         if storage_path is None:
-            storage_path = Path.home() / "jarvis_alarms.json"
+            storage_path = Path.home() / "nova_alarms.json"
         self.storage_path = storage_path
         self.alarms = [] # List of dicts: {"type": "alarm/timer", "time": "ISO timestamp", "label": "label"}
         self.running = False
