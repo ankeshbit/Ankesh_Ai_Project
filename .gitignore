@@ -48,3 +48,6 @@ Thumbs.db
 
 # Project Specific
 workspace_tts.wav
+
+credentials.json
+token.json

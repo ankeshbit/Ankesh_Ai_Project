@@ -10,6 +10,7 @@ import os
 import re
 import json
 import datetime
+import importlib.util
 import webbrowser
 import subprocess
 import random
@@ -69,6 +70,8 @@ class CommandHandler:
         self.music_folder = config.get("music_folder", str(Path.home() / "Music"))
         self.todo_file = Path.home() / "nova_todo.json"
         self.notes_file = Path.home() / "nova_notes.txt"
+        self.plugin_triggers = []
+        self._load_plugins()
 
     def handle(self, text: str) -> tuple[str, bool]:
         """
@@ -142,6 +145,11 @@ class CommandHandler:
         # ── Weather ──────────────────────────────────────────────────────────
         if self._match(text, ["weather", "temperature outside", "is it raining"]):
             return self._weather(), True
+
+        # ── Plugins ────────────────────────────────────────────────────────
+        plugin_response = self._handle_plugin_triggers(text)
+        if plugin_response:
+            return plugin_response, True
             
         # ── Productivity ─────────────────────────────────────────────────────
         if "to do list" in text or "to-do list" in text:
@@ -182,6 +190,77 @@ class CommandHandler:
             return f"Goodbye, {self.name}. Nova signing off. Stay extraordinary.", False
 
         return "", False  # Not handled — pass to AI brain
+
+    def _load_plugins(self) -> None:
+        """Discover plugin modules under `plugins/` and register their triggers."""
+        plugins_dir = Path(__file__).resolve().parent / "plugins"
+        if not plugins_dir.exists():
+            logger.info("Plugins directory not found: %s", plugins_dir)
+            return
+
+        loaded = []
+        for plugin_path in sorted(plugins_dir.glob("*.py")):
+            if plugin_path.name.startswith("_"):
+                continue
+
+            module_name = f"plugins.{plugin_path.stem}"
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, plugin_path)
+                if not spec or not spec.loader:
+                    continue
+
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                triggers = getattr(module, "TRIGGERS", [])
+                execute = getattr(module, "execute", None)
+                if not callable(execute):
+                    logger.warning("Plugin '%s' does not expose a callable execute()", plugin_path.name)
+                    continue
+
+                for trigger in triggers:
+                    phrases = [phrase.lower() for phrase in trigger.get("phrases", []) if phrase]
+                    if not phrases:
+                        continue
+                    loaded.append({
+                        "name": trigger.get("name", plugin_path.stem),
+                        "phrases": phrases,
+                        "trigger": trigger,
+                        "execute": execute,
+                        "module": module,
+                    })
+                logger.info("Loaded plugin: %s", plugin_path.name)
+            except Exception as exc:
+                logger.exception("Failed to load plugin '%s': %s", plugin_path.name, exc)
+
+        self.plugin_triggers = loaded
+
+    def _handle_plugin_triggers(self, text: str) -> str:
+        """Route recognized plugin phrases to their execute() handlers."""
+        for plugin in self.plugin_triggers:
+            if not self._match(text, plugin["phrases"]):
+                continue
+
+            try:
+                result = plugin["execute"](
+                    text=text,
+                    config=self.config,
+                    trigger=plugin["trigger"],
+                    alarm_manager=self.alarm_manager,
+                    handler=self,
+                )
+            except TypeError:
+                result = plugin["execute"](text)
+
+            if isinstance(result, tuple):
+                response_text = result[0]
+            else:
+                response_text = result
+
+            if response_text:
+                return response_text
+
+        return ""
 
     # ─── Handler Methods ──────────────────────────────────────────────────────
 
@@ -298,30 +377,119 @@ class CommandHandler:
         return f"Sleep/hibernate control isn't configured for your OS, {self.name}."
 
     def _volume(self, direction: str) -> str:
+        """
+        Platform-aware volume control:
+        - Windows: PyCAW (pycaw library)
+        - macOS: osascript subprocess calls
+        - Linux: pactl subprocess calls
+        """
+        system = platform.system()
+
         try:
-            if platform.system() == "Windows":
-                from ctypes import cast, POINTER
-                from comtypes import CLSCTX_ALL
-                from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                current = volume.GetMasterScalarVolume()
-                if direction == "up":
-                    volume.SetMasterScalarVolume(min(1.0, current + 0.1), None)
-                    return f"Volume increased, {self.name}."
-                elif direction == "down":
-                    volume.SetMasterScalarVolume(max(0.0, current - 0.1), None)
-                    return f"Volume decreased, {self.name}."
-                elif direction == "mute":
-                    muted = volume.GetMute()
-                    volume.SetMute(not muted, None)
-                    return f"Volume {'unmuted' if muted else 'muted'}, {self.name}."
-        except ImportError:
-            logger.warning("pycaw not installed. Volume control unavailable.")
+            if system == "Windows":
+                return self._volume_windows(direction)
+            elif system == "Darwin":  # macOS
+                return self._volume_macos(direction)
+            elif system == "Linux":
+                return self._volume_linux(direction)
+            else:
+                return f"Volume control not supported for {system}, {self.name}."
         except Exception as e:
             logger.error(f"Volume control error: {e}")
-        return f"Volume control encountered an issue, {self.name}. Consider installing pycaw."
+            return f"Volume control encountered an issue, {self.name}."
+
+    def _volume_windows(self, direction: str) -> str:
+        """Volume control for Windows using PyCAW."""
+        try:
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            current = volume.GetMasterScalarVolume()
+
+            if direction == "up":
+                volume.SetMasterScalarVolume(min(1.0, current + 0.1), None)
+                return f"Volume increased, {self.name}."
+            elif direction == "down":
+                volume.SetMasterScalarVolume(max(0.0, current - 0.1), None)
+                return f"Volume decreased, {self.name}."
+            elif direction == "mute":
+                muted = volume.GetMute()
+                volume.SetMute(not muted, None)
+                return f"Volume {'unmuted' if muted else 'muted'}, {self.name}."
+        except ImportError:
+            logger.warning("pycaw not installed. Install with: pip install pycaw comtypes")
+        return f"Volume control unavailable on Windows, {self.name}."
+
+    def _volume_macos(self, direction: str) -> str:
+        """Volume control for macOS using osascript."""
+        try:
+            if direction == "up":
+                subprocess.run(
+                    ["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) + 10)"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume increased, {self.name}."
+            elif direction == "down":
+                subprocess.run(
+                    ["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) - 10)"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume decreased, {self.name}."
+            elif direction == "mute":
+                # Toggle mute by setting output mute status
+                subprocess.run(
+                    ["osascript", "-e", "set volume output muted (not (output muted of (get volume settings)))"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume mute toggled, {self.name}."
+        except subprocess.CalledProcessError as e:
+            logger.error(f"macOS volume control error: {e}")
+        return f"Volume control failed on macOS, {self.name}."
+
+    def _volume_linux(self, direction: str) -> str:
+        """Volume control for Linux using pactl (PulseAudio)."""
+        try:
+            # Get current sink
+            result = subprocess.run(
+                ["pactl", "get-default-sink"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            sink = result.stdout.strip()
+
+            if direction == "up":
+                subprocess.run(
+                    ["pactl", "set-sink-volume", sink, "+5%"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume increased, {self.name}."
+            elif direction == "down":
+                subprocess.run(
+                    ["pactl", "set-sink-volume", sink, "-5%"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume decreased, {self.name}."
+            elif direction == "mute":
+                subprocess.run(
+                    ["pactl", "set-sink-mute", sink, "toggle"],
+                    check=True,
+                    capture_output=True
+                )
+                return f"Volume mute toggled, {self.name}."
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.error(f"Linux volume control error (pactl not found or failed): {e}")
+            logger.info("Install PulseAudio tools: sudo apt-get install pulseaudio-utils")
+        return f"Volume control failed on Linux, {self.name}."
 
     def _screenshot(self) -> str:
         try:

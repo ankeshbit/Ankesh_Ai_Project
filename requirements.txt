@@ -15,6 +15,7 @@ requests>=2.31.0                   # HTTP requests used by the Groq chat API cli
 python-dotenv>=1.0.0               # Optional: load API keys from .env file
 wikipedia>=1.4.0                   # General knowledge and data fallback
 psutil>=5.9.0                      # System stats (CPU, RAM, Battery)
+duckduckgo-search>=3.9.0           # DuckDuckGo web search (no API key required)
 
 # ─── Optional — Volume Control (Windows) ──────────────────────────────────────
 # pycaw>=20230407                  # Windows audio control (volume up/down/mute)
@@ -26,11 +27,11 @@ psutil>=5.9.0                      # System stats (CPU, RAM, Battery)
 # ─── Desktop GUI ───────────────────────────────────────────────────────────────
 PyQt6>=6.5.0                       # Desktop GUI rendering engine
 
-# ─── Web Backend ──────────────────────────────────────────────────────────────
-fastapi>=0.100.0                   # API and WebSocket server
-uvicorn>=0.23.0                    # ASGI Server
-websockets>=11.0                   # WebSocket support
-python-multipart>=0.0.6            # File upload support
+# ─── Google Calendar / Gmail Plugin ──────────────────────────────────────────
+google-api-python-client>=2.130.0  # Google Calendar and Gmail API client
+google-auth>=2.29.0                # OAuth2 credentials and token refresh
+google-auth-oauthlib>=1.2.0        # Installed app OAuth flow
+google-auth-httplib2>=0.2.0        # HTTP transport support for Google APIs
 
 # ─── Notes ────────────────────────────────────────────────────────────────────
 # PyAudio on Windows may require a pre-built wheel:

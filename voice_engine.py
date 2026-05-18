@@ -15,6 +15,7 @@ import subprocess
 import os
 import platform
 import io
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,19 +29,35 @@ class VoiceEngine:
     def __init__(self, config: dict):
         self.config = config
         self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
+        self.microphone = None
+        self._listen_failures = 0
+
+        self.listen_timeout = int(self.config.get("stt_timeout", 6))
+        self.phrase_time_limit = int(self.config.get("stt_phrase_time_limit", 12))
+        self.ambient_calibration_seconds = float(self.config.get("stt_calibration_seconds", 1.0))
         
         # Microphone fine-tuning for more reliable capture across rooms and devices.
-        self.recognizer.energy_threshold = 250
+        self.recognizer.energy_threshold = float(self.config.get("stt_energy_threshold", 300))
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.8
-        self.recognizer.non_speaking_duration = 0.5
+        self.recognizer.dynamic_energy_adjustment_damping = 0.15
+        self.recognizer.dynamic_energy_ratio = 1.6
+        self.recognizer.pause_threshold = 1.0
+        self.recognizer.non_speaking_duration = 0.6
 
-        # Run ambient noise calibration exactly once on boot
-        logger.info("Calibrating microphone for ambient noise... Please wait.")
-        with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
-        logger.info("Microphone calibration complete.")
+        try:
+            self.microphone = sr.Microphone()
+        except Exception as e:
+            logger.error(f"Microphone initialization failed: {e}")
+
+        # Run ambient noise calibration once on boot when a microphone is available.
+        if self.microphone is not None:
+            try:
+                logger.info("Calibrating microphone for ambient noise... Please wait.")
+                with self.microphone as source:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=self.ambient_calibration_seconds)
+                logger.info("Microphone calibration complete.")
+            except Exception as e:
+                logger.warning(f"Ambient calibration skipped: {e}")
         
         self.speaking = False
         self.tts_engine = None
@@ -114,16 +131,28 @@ class VoiceEngine:
         Returns:
             str | None: Recognized text or None on failure.
         """
+        if self.microphone is None:
+            logger.warning("Microphone is unavailable; listening is disabled.")
+            return None
+
         with self.microphone as source:
             try:
+                if self._listen_failures >= 2:
+                    try:
+                        self.recognizer.adjust_for_ambient_noise(source, duration=0.35)
+                    except Exception:
+                        pass
+
                 audio = self.recognizer.listen(
                     source,
                     timeout=timeout,
                     phrase_time_limit=phrase_limit,
                 )
             except sr.WaitTimeoutError:
+                self._listen_failures += 1
                 return None
             except Exception as e:
+                self._listen_failures += 1
                 logger.error(f"Microphone error: {e}")
                 return None
 
@@ -140,17 +169,30 @@ class VoiceEngine:
             str | None: Transcribed text or None.
         """
         try:
-            text = self.recognizer.recognize_google(
-                audio,
-                language=self.config.get("preferences", {}).get("language", "en-US")
-            )
-            logger.info(f"[User Said]: {text}")
-            return text.lower()
+            language = self.config.get("preferences", {}).get("language", "en-US")
+            candidate_languages = [language]
+            if "-" in language:
+                candidate_languages.append(language.split("-", 1)[0])
+
+            last_error = None
+            for candidate in candidate_languages:
+                try:
+                    text = self.recognizer.recognize_google(audio, language=candidate)
+                    logger.info(f"[User Said]: {text}")
+                    self._listen_failures = 0
+                    return text.lower().strip()
+                except sr.UnknownValueError as e:
+                    last_error = e
+                    continue
+
+            raise last_error or sr.UnknownValueError()
         except sr.UnknownValueError:
             logger.warning("Speech not understood.")
+            self._listen_failures += 1
             return None
         except sr.RequestError as e:
             logger.error(f"Google STT service error: {e}")
+            self._listen_failures += 1
             return None
 
     def process_audio_file(self, file_path_or_bytes: str | bytes) -> str | None:
