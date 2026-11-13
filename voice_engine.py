@@ -6,16 +6,14 @@ Uses SpeechRecognition for STT and pyttsx3 for offline TTS.
 """
 
 import speech_recognition as sr
-import pyttsx3
 import threading
 import queue
 import time
 import logging
 import subprocess
-import os
 import platform
 import io
-from typing import Optional
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -59,66 +57,117 @@ class VoiceEngine:
             except Exception as e:
                 logger.warning(f"Ambient calibration skipped: {e}")
         
+        # sr.Microphone is not re-entrant: serialize access across threads.
+        self._mic_lock = threading.Lock()
+
         self.speaking = False
-        self.tts_engine = None
-        
+
         # Dedicated Thread for TTS
         self.tts_queue = queue.Queue()
         self.tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
         self.tts_thread.start()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Text-to-Speech
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _tts_settings(self) -> tuple[int, float, str]:
+        """Read voice_rate (WPM), voice_volume (0-1) and voice_gender from config."""
+        try:
+            rate = int(self.config.get("voice_rate", 165))
+        except (TypeError, ValueError):
+            rate = 165
+        try:
+            volume = min(1.0, max(0.0, float(self.config.get("voice_volume", 1.0))))
+        except (TypeError, ValueError):
+            volume = 1.0
+        gender = str(self.config.get("voice_gender", "male")).lower()
+        return rate, volume, gender
+
+    def _build_tts_command(self, text: str) -> tuple[list[str], dict]:
+        """
+        Build the OS-native TTS command for `text`.
+
+        The text is never interpolated into a shell string: it is passed through
+        an environment variable (Windows) or stdin (macOS/Linux), so quotes,
+        `$(...)`, `&`, `%` etc. in a spoken reply can neither break the command
+        nor execute anything.
+
+        Returns:
+            (argv, subprocess.run keyword arguments)
+        """
+        rate, volume, gender = self._tts_settings()
+        system = platform.system()
+
+        if system == "Windows":
+            # SpeechSynthesizer.Rate is -10..10 (0 = ~165 WPM); Volume is 0..100.
+            ps_rate = max(-10, min(10, round((rate - 165) / 15)))
+            ps_gender = "Female" if gender == "female" else "Male"
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Rate = {ps_rate}; $s.Volume = {int(volume * 100)}; "
+                f"try {{ $s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::{ps_gender}) }} catch {{}}; "
+                "$s.Speak($env:NOVA_TTS_TEXT)"
+            )
+            import os
+            env = {**os.environ, "NOVA_TTS_TEXT": text}
+            kwargs = {"env": env, "creationflags": subprocess.CREATE_NO_WINDOW}
+            return ["powershell", "-NoProfile", "-Command", script], kwargs
+
+        if system == "Darwin":
+            return ["say", "-r", str(rate), "-f", "-"], {"input": text}
+
+        # Linux / other: espeak reads from stdin when no text argument is given.
+        amplitude = int(volume * 200)
+        voice = "en+f3" if gender == "female" else "en"
+        return ["espeak", "-v", voice, "-s", str(rate), "-a", str(amplitude), "--stdin"], {"input": text}
+
     def _tts_worker(self):
-        """Native OS background worker for Text-to-Speech that completely bypasses Windows COM threading locks."""
+        """Native OS background worker for Text-to-Speech (avoids Windows COM threading locks)."""
         logger.info("TTS worker thread initialized successfully.")
 
         while True:
-            text = self.tts_queue.get()
-            if text is None: break
+            item = self.tts_queue.get()
+            if item is None:
+                break
+            text, done = item
             try:
                 self.speaking = True
                 logger.info(f"[Nova Speaking API]: {text}")
-                
-                # Sanitize text for console string parsing
-                clean_text = text.replace("'", "").replace('"', "")
-                
-                if platform.system() == "Windows":
-                    # Use native PowerShell speech synthesizer to guarantee audio plays without crashing
-                    cmd = f'powershell -Command "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak(\'{clean_text}\')"'
-                    subprocess.run(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                else:
-                    # Generic fallback for macOS / Linux
-                    os.system(f'say "{clean_text}"' if platform.system() == "Darwin" else f'espeak "{clean_text}"')
-                    
+                argv, kwargs = self._build_tts_command(text)
+                # Generous cap so a hung synthesizer can never freeze the assistant.
+                subprocess.run(
+                    argv,
+                    text=True,
+                    timeout=30 + len(text) // 8,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **kwargs,
+                )
+            except FileNotFoundError:
+                logger.error(f"TTS command '{argv[0]}' not found. Install it (e.g. 'sudo apt install espeak') to hear Nova.")
+            except subprocess.TimeoutExpired:
+                logger.error("TTS timed out.")
             except Exception as e:
                 logger.error(f"TTS engine error: {e}")
             finally:
                 self.speaking = False
-                self.tts_queue.task_done()
-
-    def _set_voice_gender(self):
-        """Select the appropriate voice based on gender preference."""
-        if not self.tts_engine: return
-        gender = self.config.get("voice_gender", "male").lower()
-        voices = self.tts_engine.getProperty("voices")
-        for voice in voices:
-            voice_name = voice.name.lower()
-            if gender == "female" and ("female" in voice_name or "zira" in voice_name or "hazel" in voice_name):
-                self.tts_engine.setProperty("voice", voice.id)
-                return
-            elif gender == "male" and ("male" in voice_name or "david" in voice_name or "mark" in voice_name):
-                self.tts_engine.setProperty("voice", voice.id)
-                return
-        if voices:
-            self.tts_engine.setProperty("voice", voices[0].id)
+                done.set()
 
     def speak(self, text: str):
         """
-        Queue text for the TTS worker and block until finished processing.
+        Queue text for the TTS worker and block until *this* utterance finishes.
+
+        Blocking keeps the microphone from hearing Nova's own voice. Waiting on a
+        per-utterance event (instead of Queue.join) means a caller is never stuck
+        behind unrelated queue items, and can never hang forever if TTS dies.
         """
-        if not text:
+        if not text or not text.strip():
             return
-        self.tts_queue.put(text)
-        self.tts_queue.join()  # Block so microphone doesn't listen to Nova's own voice
+        done = threading.Event()
+        self.tts_queue.put((text, done))
+        done.wait(timeout=120)
 
     def listen(self, timeout: int = 5, phrase_limit: int = 15) -> str | None:
         """
@@ -135,7 +184,7 @@ class VoiceEngine:
             logger.warning("Microphone is unavailable; listening is disabled.")
             return None
 
-        with self.microphone as source:
+        with self._mic_lock, self.microphone as source:
             try:
                 if self._listen_failures >= 2:
                     try:
@@ -218,6 +267,7 @@ class VoiceEngine:
         Returns the path to the written file.
         """
         try:
+            import pyttsx3  # imported lazily: only this helper needs it
             clean_text = text.replace("'", "").replace('"', "")
             engine = pyttsx3.init()
             
@@ -240,6 +290,18 @@ class VoiceEngine:
             logger.error(f"TTS generation error: {e}")
             return ""
 
+    @staticmethod
+    def contains_wake_word(text: str, wake_word: str) -> bool:
+        """
+        True if `wake_word` appears in `text` as a whole word.
+
+        A plain substring test fires on "innovation" or "renovate" for the
+        wake word "nova".
+        """
+        if not text or not wake_word:
+            return False
+        return re.search(rf"\b{re.escape(wake_word.lower())}\b", text.lower()) is not None
+
     def listen_for_wake_word(self, wake_word: str = "nova", timeout: int = 8) -> bool:
         """
         Continuously listen until the wake word is detected.
@@ -251,11 +313,16 @@ class VoiceEngine:
         Returns:
             bool: True if wake word detected, False otherwise.
         """
+        if self.microphone is None:
+            # Without a mic listen() returns instantly; don't spin the CPU.
+            time.sleep(timeout)
+            return False
+
         end_time = time.time() + timeout
         while time.time() < end_time:
             remaining = max(1, int(end_time - time.time()))
             text = self.listen(timeout=remaining, phrase_limit=min(4, remaining))
-            if text and wake_word.lower() in text:
+            if self.contains_wake_word(text, wake_word):
                 logger.info(f"Wake word '{wake_word}' detected!")
                 return True
         return False
