@@ -31,20 +31,47 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     """
     Load the Nova configuration from config.json.
 
+    Missing keys are filled in from the built-in defaults, so every field in
+    config.json is optional. A ``GROQ_API_KEY`` environment variable (or a
+    ``.env`` file next to config.json, if python-dotenv is installed) is used
+    when ``groq_api_key`` is empty or still the sample placeholder.
+
     Returns:
         dict: Parsed configuration dictionary.
     """
+    config = _default_config()
     try:
         with open(path, "r", encoding="utf-8") as f:
-            config = json.load(f)
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("config.json must contain a JSON object")
+        prefs = {**config.get("preferences", {}), **(loaded.get("preferences") or {})}
+        config.update(loaded)
+        config["preferences"] = prefs
         logger.info(f"Configuration loaded from {path}")
-        return config
     except FileNotFoundError:
         logger.error(f"config.json not found at {path}. Using defaults.")
-        return _default_config()
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, ValueError) as e:
         logger.error(f"Config parse error: {e}. Using defaults.")
-        return _default_config()
+
+    _apply_env_overrides(config, Path(path).parent)
+    return config
+
+
+_PLACEHOLDER_KEYS = {"", "YOUR_GROQ_API_KEY_HERE", "YOUR_OPENAI_API_KEY_HERE"}
+
+
+def _apply_env_overrides(config: dict, env_dir: Path):
+    """Pull the Groq API key from .env / the environment when config has none."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_dir / ".env")
+    except ImportError:
+        pass
+
+    env_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if env_key and str(config.get("groq_api_key", "")).strip() in _PLACEHOLDER_KEYS:
+        config["groq_api_key"] = env_key  # use_groq is still controlled by config.json
 
 
 def save_config(config: dict, path: Path = CONFIG_PATH):
@@ -72,6 +99,8 @@ def _default_config() -> dict:
         "groq_api_key": "",
         "groq_model": "llama-3.1-8b-instant",
         "use_groq": False,
+        "use_ollama": False,
+        "ollama_model": "llama3",
         "music_folder": str(Path.home() / "Music"),
         "log_conversations": True,
         "max_memory_turns": 10,
@@ -117,10 +146,10 @@ def get_greeting(config: dict) -> str:
         salutation = "Good morning"
     elif 12 <= hour < 17:
         salutation = "Good afternoon"
-    elif 17 <= hour < 21:
+    elif 17 <= hour < 24:
         salutation = "Good evening"
     else:
-        salutation = "Good evening"
+        salutation = "Hello"  # small hours (00:00-04:59)
 
     return (
         f"{salutation}, {name}. I am {assistant}, your personal AI assistant. "
@@ -172,7 +201,8 @@ def get_log_summary(days: int = 7) -> str:
         return "No conversation logs found."
     lines = []
     for log in logs:
-        count = sum(1 for line in open(log, encoding="utf-8") if line.startswith("["))
+        with open(log, encoding="utf-8") as fh:
+            count = sum(1 for line in fh if line.startswith("["))
         lines.append(f"  {log.name}: {count} conversation(s)")
     return "Recent logs:\n" + "\n".join(lines)
 
@@ -182,8 +212,17 @@ def get_log_summary(days: int = 7) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def sanitize_text(text: str) -> str:
-    """Remove special characters from text for cleaner TTS output."""
-    return re.sub(r"[*_`#]", "", text).strip()
+    """
+    Strip Markdown decoration for cleaner TTS/GUI output.
+
+    Only emphasis markers are removed: ``*``, backticks, leading ``#`` heading
+    marks and ``_`` that is not inside a word. So ``nova_screenshot_1.png`` and
+    ``C#`` are left intact.
+    """
+    text = re.sub(r"[*`]", "", text)
+    text = re.sub(r"(?m)^\s*#+\s*", "", text)
+    text = re.sub(r"(?<!\w)_+|_+(?!\w)", "", text)
+    return text.strip()
 
 
 def format_duration(seconds: int) -> str:
@@ -216,6 +255,7 @@ def setup_logging(level: str = "INFO"):
             logging.StreamHandler(),                    # Console
             logging.FileHandler(log_file, encoding="utf-8"),  # File
         ],
+        force=True,  # allow re-configuring (e.g. --debug after the import-time setup)
     )
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("comtypes").setLevel(logging.WARNING)
