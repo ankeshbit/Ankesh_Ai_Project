@@ -7,13 +7,20 @@ Maintains short-term conversation memory (rolling window).
 Includes ChromaDB RAG for long-term memory and context retrieval.
 """
 
+import ast
 import logging
 import datetime
+import operator
+import re
 from collections import deque
 import requests
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class _RagDisabled(Exception):
+    """Internal marker: RAG deliberately turned off for this instance."""
 
 
 class AIBrain:
@@ -40,28 +47,42 @@ class AIBrain:
         "llama3-70b-8192",
     )
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, enable_rag: bool = True):
+        """
+        Args:
+            config: Nova configuration dict.
+            enable_rag: Set False for throw-away helper instances that should not
+                load the embedding model or touch the persistent RAG store.
+        """
         self.config = config
         self.use_groq = config.get("use_groq", config.get("use_openai", False))
         self.model_candidates = self._build_groq_model_candidates(config)
         self.model = self.model_candidates[0]
-        self.api_key = config.get("groq_api_key", config.get("openai_api_key", ""))
+        self.api_key = str(config.get("groq_api_key", config.get("openai_api_key", "")) or "").strip()
         self._chat_url = "https://api.groq.com/openai/v1/chat/completions"
         self.use_ollama = config.get("use_ollama", False)
         self.ollama_model = config.get("ollama_model", "llama3")
-        self.max_memory = config.get("max_memory_turns", 10)
+        self.ollama_timeout = float(config.get("ollama_timeout", 60))  # local models can be slow to load
+        try:
+            # maxlen=0 would silently drop the user's message and make every LLM call fail.
+            self.max_memory = max(1, int(config.get("max_memory_turns", 10)))
+        except (TypeError, ValueError):
+            self.max_memory = 10
 
         # Rolling conversation history (user + assistant pairs)
         self.memory: deque = deque(maxlen=self.max_memory * 2)
 
         # Initialize ChromaDB for RAG memory
+        self.rag_enabled = False
         try:
+            if not enable_rag:
+                raise _RagDisabled()
             import chromadb
             from sentence_transformers import SentenceTransformer
             
             # Use persistent storage in .rag_memory directory
             self.rag_db_path = Path.home() / ".nova_rag_memory"
-            self.rag_db_path.mkdir(exist_ok=True)
+            self.rag_db_path.mkdir(parents=True, exist_ok=True)
             
             self.chroma_client = chromadb.PersistentClient(path=str(self.rag_db_path))
             self.rag_collection = self.chroma_client.get_or_create_collection(
@@ -73,6 +94,8 @@ class AIBrain:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
             self.rag_enabled = True
             logger.info("ChromaDB RAG memory initialized successfully.")
+        except _RagDisabled:
+            pass
         except ImportError:
             logger.warning("ChromaDB or sentence-transformers not installed. RAG memory disabled.")
             self.rag_enabled = False
@@ -118,34 +141,62 @@ class AIBrain:
         rag_context = self._retrieve_rag_context(user_input)
 
         response = None
-        
+        from_llm = False
+
         if self.use_groq:
             response = self._ask_groq(rag_context)
-            
+
         if not response and self.use_ollama:
             response = self._ask_ollama(rag_context)
-            
-        if not response:
+
+        if response:
+            from_llm = True
+        else:
             response = self._ask_fallback(user_input)
 
         # Save assistant reply to memory
         self.memory.append({"role": "assistant", "content": response})
-        
-        # Store the exchange in RAG memory
-        self._store_rag_exchange(user_input, response)
-        
+
+        # Long-term RAG memory only keeps real LLM answers. Canned fallback replies
+        # ("my offline reasoning module has limited scope...") would otherwise be
+        # retrieved later as if they were useful past context.
+        if from_llm:
+            self._store_rag_exchange(user_input, response)
+
         return response
 
-    def _ask_groq(self, rag_context: str = "") -> str:
-        """Send conversation history to Groq and get a reply."""
+    def complete(self, prompt: str) -> str | None:
+        """
+        One-shot LLM completion that leaves conversation and RAG memory untouched.
+
+        Used by plugins (e.g. web-search summaries). Returns None when no LLM
+        backend is available or reachable, so callers can degrade gracefully
+        instead of getting the rule-based chat fallback's canned reply.
+        """
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        reply = None
+        if self.use_groq:
+            reply = self._ask_groq(messages=messages)
+        if not reply and self.use_ollama:
+            reply = self._ask_ollama(messages=messages)
+        return reply or None
+
+    def _build_messages(self, rag_context: str = "") -> list[dict]:
+        """System prompt (+ RAG context) followed by the rolling conversation."""
         system_prompt = self.SYSTEM_PROMPT
-        
-        # Inject RAG context into system prompt if available
         if rag_context:
             system_prompt = f"{self.SYSTEM_PROMPT}\n\n[Related Past Context]\n{rag_context}"
-        
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(list(self.memory))
+        return messages
+
+    def _ask_groq(self, rag_context: str = "", messages: list[dict] | None = None) -> str | None:
+        """Send conversation history (or explicit `messages`) to Groq and get a reply."""
+        if messages is None:
+            messages = self._build_messages(rag_context)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -181,11 +232,17 @@ class AIBrain:
 
                 response.raise_for_status()
                 data = response.json()
-                reply = data["choices"][0]["message"]["content"].strip()
+                reply = (data["choices"][0]["message"]["content"] or "").strip()
+                if not reply:
+                    continue
                 logger.info(f"[Groq Response:{model}] {reply}")
                 self.model = model
                 return reply
 
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # Offline / unreachable: trying more models would only multiply the wait.
+                logger.error(f"Groq unreachable: {e}. Falling through.")
+                return None
             except requests.RequestException as e:
                 logger.error(f"Groq request failed for model '{model}': {e}. Falling through.")
             except (KeyError, IndexError, ValueError, TypeError) as e:
@@ -217,22 +274,16 @@ class AIBrain:
             or "model" in message and "not found" in message
         )
 
-    def _ask_ollama(self, rag_context: str = "") -> str | None:
-        """Send conversation history to local Ollama instance."""
+    def _ask_ollama(self, rag_context: str = "", messages: list[dict] | None = None) -> str | None:
+        """Send conversation history (or explicit `messages`) to a local Ollama instance."""
         import urllib.request
         import urllib.error
         import json
-        
+
         try:
-            system_prompt = self.SYSTEM_PROMPT
-            
-            # Inject RAG context into system prompt if available
-            if rag_context:
-                system_prompt = f"{self.SYSTEM_PROMPT}\n\n[Related Past Context]\n{rag_context}"
-            
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(list(self.memory))
-            
+            if messages is None:
+                messages = self._build_messages(rag_context)
+
             payload = {
                 "model": self.ollama_model,
                 "messages": messages,
@@ -245,12 +296,12 @@ class AIBrain:
                 headers={'Content-Type': 'application/json'}
             )
             logger.info(f"Querying Ollama with model {self.ollama_model}...")
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=self.ollama_timeout) as response:
                 if response.status == 200:
                     result = json.loads(response.read().decode('utf-8'))
-                    reply = result.get("message", {}).get("content", "").strip()
+                    reply = (result.get("message", {}).get("content", "") or "").strip()
                     logger.info(f"[Ollama Response] {reply}")
-                    return reply
+                    return reply or None
                 else:
                     logger.warning(f"Ollama returned status code {response.status}.")
                     return None
@@ -315,14 +366,15 @@ class AIBrain:
         if "how are you" in text:
             return f"All systems are operating at peak efficiency, {name}. Ready to assist."
         if "your name" in text or "who are you" in text:
-            return f"I am Nova — Just A Rather Versatile Intelligent Organization. At your service, {name}."
-        if "thank" in text:
+            return f"I am Nova, your personal AI assistant. At your service, {name}."
+        if re.search(r"\bthank(s| you)?\b", text):
             return f"It's what I'm here for, {name}. Always."
         if "joke" in text:
             return "Why do engineers prefer dark mode? Because light attracts bugs, {name}.".format(name=name)
-        if "hello" in text or "hi" in text or "hey" in text:
+        # Whole words only: a substring test makes "hi" match "this", "which", "philosophy"...
+        if re.search(r"\b(hello|hi|hey)\b", text):
             return f"Good to hear from you, {name}. How may I assist you today?"
-        if "help" in text:
+        if re.search(r"\bhelp\b", text):
             return (
                 f"Of course, {name}. I can open applications, search the web, answer engineering questions, "
                 "tell you the time, play music, or just have a conversation. What do you need?"
@@ -355,25 +407,87 @@ class AIBrain:
             "has limited scope. For deeper insights, enable Groq in config.json by setting use_groq to true and providing a groq_api_key."
         )
 
+    # ─── Safe arithmetic ──────────────────────────────────────────────────────
+
+    _BIN_OPS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+    }
+    _MAX_EXPONENT = 100
+    _MAX_OPERAND = 1e12
+
+    @classmethod
+    def _safe_eval(cls, node):
+        """
+        Evaluate an arithmetic AST with a strict whitelist.
+
+        Only numbers, + - * / // % ** and unary +/- are allowed, and exponents
+        are capped. (A character whitelist plus eval() is not enough: "9**9**9**9"
+        passes it and freezes the assistant.)
+        """
+        if isinstance(node, ast.Expression):
+            return cls._safe_eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            if abs(node.value) > cls._MAX_OPERAND:
+                raise ValueError("operand too large")
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = cls._safe_eval(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and type(node.op) in cls._BIN_OPS:
+            left = cls._safe_eval(node.left)
+            right = cls._safe_eval(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > cls._MAX_EXPONENT:
+                raise ValueError("exponent too large")
+            result = cls._BIN_OPS[type(node.op)](left, right)
+            if isinstance(result, complex):
+                raise ValueError("complex result")
+            return result
+        raise ValueError("unsupported expression")
+
+    _WORD_OPERATORS = (
+        (r"\bto the power of\b", "**"),
+        (r"\bmultiplied by\b", "*"),
+        (r"\bdivided by\b", "/"),
+        (r"\bmodulo\b|\bmod\b", "%"),
+        (r"\bplus\b", "+"),
+        (r"\bminus\b", "-"),
+        (r"\btimes\b", "*"),
+        (r"\bover\b", "/"),
+        (r"(?<=\d)\s*x\s*(?=\d)", "*"),
+        (r"\^", "**"),
+    )
+
     def _try_math(self, text: str) -> str | None:
         """
-        Attempt to evaluate simple arithmetic from natural language.
-        Extracts mathematical expressions using eval (safely restricted).
+        Evaluate simple arithmetic found in natural language ("what is 12 times 7").
+
+        Needs a real expression (number, operator, number); a lone number such as
+        the "2020" in "capital of France in 2020" is not a calculation.
         """
-        import re
-        # Extract numeric expressions like "2 + 2", "45 * 3", "100 / 4"
-        pattern = r"[-+]?\d+(?:\.\d+)?(?:\s*[\+\-\*\/\%\^]\s*[-+]?\d+(?:\.\d+)?)*"
-        match = re.search(pattern, text)
-        if match:
-            expr = match.group().replace("^", "**")
+        expr_text = text.lower()
+        for pattern, symbol in self._WORD_OPERATORS:
+            expr_text = re.sub(pattern, f" {symbol} ", expr_text)
+
+        for candidate in re.findall(r"[\d.()+\-*/% ]+", expr_text):
+            candidate = candidate.strip()
+            if not re.search(r"\d\s*\)?\s*(\*\*|[-+*/%])\s*\(?\s*[-+]?\s*\d", candidate):
+                continue
             try:
-                # Safe eval: only allow numbers and basic operators
-                allowed = set("0123456789+-*/()%. \n")
-                if all(c in allowed for c in expr):
-                    result = eval(expr)
-                    return f"The result of {match.group()} is {result}, {self.config.get('user_name', 'Sir')}."
-            except Exception:
-                pass
+                value = self._safe_eval(ast.parse(candidate, mode="eval"))
+            except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, MemoryError):
+                continue
+            if isinstance(value, float):
+                value = round(value, 6)
+                if value == int(value):
+                    value = int(value)
+            shown = re.sub(r"\s+", " ", candidate)
+            return f"The result of {shown} is {value}, {self.config.get('user_name', 'Sir')}."
         return None
 
     def _retrieve_rag_context(self, user_input: str) -> str:
@@ -391,7 +505,7 @@ class AIBrain:
             # Query the collection for top 3 similar exchanges
             results = self.rag_collection.query(
                 query_embeddings=[user_embedding],
-                n_results=3,
+                n_results=max(1, min(3, self.rag_collection.count())),
                 include=["documents", "metadatas"]
             )
             
