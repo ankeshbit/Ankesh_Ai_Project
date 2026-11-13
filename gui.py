@@ -1,8 +1,6 @@
-import sys
-import math
 import random
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+    QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QPushButton
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPointF
@@ -62,7 +60,7 @@ class NovaCoreWidget(QWidget):
         # Center and sizing
         cx = self.width() / 2.0
         cy = self.height() / 2.0
-        radius = min(cx, cy) - 40
+        radius = max(10.0, min(cx, cy) - 40)
 
         # Colors based on state
         if self.status == "LISTENING":
@@ -134,11 +132,19 @@ class NovaGUI(QWidget):
     sig_text_submit = pyqtSignal(str) # Kept for main.py compatibility
     sig_shutdown = pyqtSignal()
 
+    # Nova runs on a background thread, and Qt widgets may only be touched from
+    # the GUI thread. Public methods emit these signals; Qt delivers them to the
+    # slots on the GUI thread (queued connection), so callers on any thread are safe.
+    _sig_status = pyqtSignal(str)
+    _sig_message = pyqtSignal(str, str)
+
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
-        self.init_ui()
         self._drag_pos = None
+        self.init_ui()
+        self._sig_status.connect(self._apply_status)
+        self._sig_message.connect(self._apply_message)
 
     def init_ui(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -181,8 +187,10 @@ class NovaGUI(QWidget):
         # --- SUBTITLE & STATUS ---
         self.status_label = QLabel("SYSTEM IDLE")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
-        self.status_label.setStyleSheet("color: rgba(0, 255, 255, 180); background: transparent; letter-spacing: 8px;")
+        status_font = QFont("Consolas", 14, QFont.Weight.Bold)
+        status_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 8)
+        self.status_label.setFont(status_font)
+        self.status_label.setStyleSheet("color: rgba(0, 255, 255, 180); background: transparent;")
         bg_layout.addWidget(self.status_label)
 
         # --- HOLOGRAPHIC CORE ---
@@ -201,9 +209,17 @@ class NovaGUI(QWidget):
         main_layout.addWidget(self.bg_frame)
 
     def add_message(self, role: str, text: str):
+        """Show a subtitle. Safe to call from any thread."""
+        self._sig_message.emit(role, text)
+
+    def set_status(self, status: str):
+        """Update the status label and core animation. Safe to call from any thread."""
+        self._sig_status.emit(status)
+
+    def _apply_message(self, role: str, text: str):
         """
         Instead of a scrolling chat log, we just show subtitles at the bottom.
-        We keep this method signature because main.py invokes it.
+        Runs on the GUI thread.
         """
         if role == "user":
             self.caption_label.setStyleSheet("color: rgba(0, 200, 255, 150); background: transparent;")
@@ -212,7 +228,7 @@ class NovaGUI(QWidget):
             self.caption_label.setStyleSheet("color: rgba(255, 255, 255, 200); background: transparent;")
             self.caption_label.setText(text)
 
-    def set_status(self, status: str):
+    def _apply_status(self, status: str):
         self.status_label.setText(f"SYSTEM {status.upper()}")
         self.core.set_status(status)
 
