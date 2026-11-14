@@ -10,6 +10,8 @@
     "use_groq": false,
     "use_ollama": false,
     "ollama_model": "llama3",
+    "ollama_timeout": 60,
+    "GOOGLE_CREDENTIALS_PATH": "credentials.json",
     "music_folder": "C:/Users/YourUser/Music",
     "browser": "chrome",
     "log_conversations": true,

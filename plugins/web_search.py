@@ -19,27 +19,42 @@ from typing import Dict, Any
 logger = logging.getLogger(__name__)
 
 
+# Short conversational fragments that follow "what's"/"what is" but are chit-chat, not searches.
+_CHITCHAT = {"up", "new", "wrong", "happening", "going on", "good", "cooking", "the matter", "the time", "the date", "today", "time", "date"}
+
+
 def _extract_search_query(text: str) -> str:
-    """Extract search query from various voice command phrases."""
+    """
+    Extract the search query from a voice command.
+
+    Returns "" when `text` is not really a search request, so the caller can
+    decline and let the AI brain handle it. The patterns are anchored at the
+    start of the sentence: "what is Ohm's law" is a search, but "can you tell
+    me what is on your mind" is not, and neither is "what's your name".
+    """
     text_lower = text.lower().strip()
 
-    # Remove common trigger phrases
     patterns = [
-        r"^(search for|search)\s+(.+)$",
-        r"^(what is|what's)\s+(.+)$",
-        r"^(latest news about|news about)\s+(.+)$",
-        r"^(look up|look for)\s+(.+)$",
-        r"^(who is|who's)\s+(.+)$",
-        r"^(what are)\s+(.+)$",
+        r"^(?:please\s+)?(?:search|look up|look for|find)(?:\s+(?:the web|the internet|online|google))?(?:\s+for)?\s+(.+)$",
+        r"^(?:what is|what's|what are|what were)\s+(?:a |an |the )?(.+)$",
+        r"^(?:who is|who's|who was)\s+(.+)$",
+        r"^(?:the )?(?:latest )?news (?:about|on)\s+(.+)$",
+        r"^(?:latest news about|news about)\s+(.+)$",
     ]
 
+    query = ""
     for pattern in patterns:
         match = re.search(pattern, text_lower)
         if match:
-            return match.group(2).strip()
+            query = match.group(1).strip(" ?.!,")
+            break
 
-    # Fallback: return text after trigger phrase
-    return text_lower
+    if not query or query in _CHITCHAT:
+        return ""
+    # Questions about the assistant itself ("what is your name", "who are you") aren't web searches.
+    if re.match(r"^(?:your|you|you're|yours)\b", query):
+        return ""
+    return query
 
 
 def _fetch_duckduckgo_results(query: str, max_results: int = 3) -> list[Dict[str, str]]:
@@ -54,7 +69,10 @@ def _fetch_duckduckgo_results(query: str, max_results: int = 3) -> list[Dict[str
         List of dicts with 'title', 'snippet', and 'url' keys
     """
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS  # current package name
+        except ImportError:
+            from duckduckgo_search import DDGS  # legacy name
 
         results = []
         with DDGS() as ddgs:
@@ -66,7 +84,7 @@ def _fetch_duckduckgo_results(query: str, max_results: int = 3) -> list[Dict[str
                 })
         return results
     except ImportError:
-        logger.error("duckduckgo-search not installed. Install with: pip install duckduckgo-search")
+        logger.error("DuckDuckGo search library not installed. Install with: pip install duckduckgo-search")
         return []
     except Exception as e:
         logger.error(f"DuckDuckGo search error: {e}")
@@ -87,6 +105,16 @@ def _format_results_for_llm(query: str, results: list[Dict[str, str]]) -> str:
     return formatted
 
 
+def _fallback_readout(query: str, results: list[Dict[str, str]]) -> str:
+    """Spoken answer built straight from the top result when no LLM is available."""
+    top = results[0]
+    title = (top.get("title") or "").strip()
+    snippet = (top.get("snippet") or "").strip()
+    if len(snippet) > 300:
+        snippet = snippet[:300].rsplit(" ", 1)[0] + "..."
+    return f"Here is the top result for {query}. {title}. {snippet}".strip()
+
+
 def execute(
     text: str,
     config: Dict[str, Any] | None = None,
@@ -97,7 +125,7 @@ def execute(
     """
     Execute web search plugin.
 
-    Extracts query, fetches DuckDuckGo results, and passes to LLM for summarization.
+    Extracts query, fetches DuckDuckGo results, and has the LLM summarize them.
 
     Args:
         text: User input text
@@ -107,39 +135,39 @@ def execute(
         handler: CommandHandler instance
 
     Returns:
-        LLM-generated summary of search results
+        A spoken summary, or "" if the text isn't a web-search request (so the
+        assistant falls through to the AI brain).
     """
     try:
-        # Extract search query from voice command
         query = _extract_search_query(text)
         if not query or len(query) < 2:
-            return "I didn't catch the search query. Try: search for python programming."
+            return ""
 
         logger.info(f"Web search plugin: searching for '{query}'")
 
-        # Fetch DuckDuckGo results
         results = _fetch_duckduckgo_results(query, max_results=3)
         if not results:
-            return f"No search results found for '{query}'. Please try a different search term."
+            return f"I couldn't find any web results for '{query}'. Please try a different search term."
 
-        # Format results for LLM
         formatted_results = _format_results_for_llm(query, results)
         logger.debug(f"Search results:\n{formatted_results}")
 
-        # Pass to LLM for summarization
+        # Reuse the live brain when the handler has one; otherwise build a lightweight
+        # one with RAG off (a full AIBrain reloads the embedding model and would write
+        # this search into the user's long-term memory).
         from ai_brain import AIBrain
 
-        # Create a temporary brain instance to avoid polluting the main brain's memory
-        # Use the same config for consistency
-        brain = AIBrain(config or {})
-        summary_prompt = f"Summarize these search results in 3 sentences:\n\n{formatted_results}"
-        summary = brain.ask(summary_prompt)
+        brain = getattr(handler, "brain", None) or AIBrain(config or {}, enable_rag=False)
+        summary = brain.complete(
+            "Using only these search results, answer in at most 3 short spoken sentences. "
+            "No lists, no URLs.\n\n" + formatted_results
+        )
 
-        return summary
+        return summary or _fallback_readout(query, results)
 
     except Exception as e:
         logger.exception(f"Web search plugin error: {e}")
-        return f"Web search encountered an error: {e}"
+        return "Web search ran into a problem. Please try again in a moment."
 
 
 # Plugin discovery / registration hints

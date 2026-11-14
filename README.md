@@ -82,8 +82,8 @@ Nova is an open-source, feature-rich voice assistant for desktop with advanced A
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/nova-ai.git
-cd nova-ai
+git clone https://github.com/ankeshbit/Ankesh_Ai_Project.git
+cd Ankesh_Ai_Project
 
 # 2. Create virtual environment
 python -m venv venv
@@ -98,6 +98,10 @@ cp config.sample.json config.json
 ```
 
 ### Notes
+
+RAG long-term memory is optional. To enable it: `pip install chromadb sentence-transformers`.
+
+You can keep your API key out of `config.json`: set the `GROQ_API_KEY` environment variable or put it in a `.env` file next to `config.json`.
 
 If you plan to use the Google Calendar and Gmail plugin, install the OAuth client libraries and Google API client support:
 
@@ -153,6 +157,7 @@ Create `config.json` from `config.sample.json`. All fields are optional with sen
 | `use_groq` | boolean | `false` | Enable Groq backend |
 | `use_ollama` | boolean | `false` | Enable local Ollama backend |
 | `ollama_model` | string | `"llama3"` | Local model name |
+| `ollama_timeout` | number | `60` | Seconds to wait for the local model |
 
 ### Advanced Settings
 
@@ -194,6 +199,9 @@ Create `config.json` from `config.sample.json`. All fields are optional with sen
 # Audio
 "Nova, play music"
 "Nova, set volume to 50 percent"
+
+# Power (always asks for confirmation first - say "yes" to proceed)
+"Nova, restart the computer"
 
 # Memory
 "Nova, clear memory"
@@ -238,7 +246,6 @@ Existing plugins include:
 ### AI & Memory
 - **ChromaDB** - Vector database for RAG
 - **sentence-transformers** - Semantic embeddings
-- **APScheduler** - Background task scheduling
 
 ### System
 - **psutil** - CPU, RAM, battery monitoring
@@ -263,6 +270,7 @@ nova-ai/
 ├── config.json              # Runtime configuration (create from sample)
 ├── config.sample.json       # Configuration template
 ├── requirements.txt         # Python dependencies
+├── test_nova.py             # Unit/regression tests (python -m pytest)
 ├── README.md                # This file
 ├── LICENSE                  # MIT License
 ├── logs/                    # Application logs

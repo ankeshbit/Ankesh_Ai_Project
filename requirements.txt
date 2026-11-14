@@ -9,13 +9,16 @@ pyaudio>=0.2.14                    # Microphone input (required by SpeechRecogni
 
 # ─── AI / LLM ─────────────────────────────────────────────────────────────────
 # Groq API is accessed via requests against the OpenAI-compatible endpoint.
+# Optional — long-term RAG memory (large downloads; Nova works without them):
+# chromadb
+# sentence-transformers
 
 # ─── System & Utilities ───────────────────────────────────────────────────────
 requests>=2.31.0                   # HTTP requests used by the Groq chat API client flow
 python-dotenv>=1.0.0               # Optional: load API keys from .env file
 wikipedia>=1.4.0                   # General knowledge and data fallback
 psutil>=5.9.0                      # System stats (CPU, RAM, Battery)
-duckduckgo-search>=3.9.0           # DuckDuckGo web search (no API key required)
+duckduckgo-search>=3.9.0           # DuckDuckGo web search (no API key required; the newer `ddgs` package also works)
 
 # ─── Optional — Volume Control (Windows) ──────────────────────────────────────
 # pycaw>=20230407                  # Windows audio control (volume up/down/mute)

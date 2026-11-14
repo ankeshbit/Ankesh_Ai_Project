@@ -13,19 +13,28 @@ Wake Word: Say "Nova" to activate
 Exit:      Say "Goodbye Nova" or close the window
 """
 
+from __future__ import annotations
+
 import sys
 import time
 import threading
 import logging
-import signal
 import argparse
-import winsound
-from pathlib import Path
 
+# winsound only exists on Windows; importing it unconditionally crashed Linux/macOS at startup.
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
+# PyQt6 is only needed for GUI mode. Importing it unconditionally made even
+# `--no-gui` / `--text` fail on machines without it.
 try:
     from PyQt6.QtWidgets import QApplication
+    from gui import NovaGUI
 except ImportError:
-    pass
+    QApplication = None
+    NovaGUI = None
 
 
 # ─── Local Modules ────────────────────────────────────────────────────────────
@@ -33,7 +42,6 @@ from utils import load_config, get_greeting, log_conversation, sanitize_text, se
 from voice_engine import VoiceEngine
 from command_handler import CommandHandler
 from ai_brain import AIBrain
-from gui import NovaGUI
 from alarm_manager import AlarmManager
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
@@ -42,17 +50,32 @@ logger = logging.getLogger(__name__)
 
 # ─── ASCII Banner ─────────────────────────────────────────────────────────────
 BANNER = r"""
-     _  ___  ______  _   _ ___ ____
-    | |/ _ \|  _ \ \| | | |_ _/ ___|
-    | | |_| | |_) | \ | | || |\___ \
- _  | |  _  |  _ <|\ \/ / | | ___) |
-| |_| | | | | | \ \ \__/ |___|____/
- \___/|_| |_|_|  \_\
+    _   _  _____     _____
+   | \ | |/ _ \ \   / / _ \
+   |  \| | | | \ \ / / |_| |
+   | |\  | |_| |\ V /|  _  |
+   |_| \_|\___/  \_/ |_| |_|
 
-   Just A Rather Versatile Intelligent Organization
-   -----------------------------------------------
-   Version 2.0  |  AI Voice Assistant
+   Your Personal AI Voice Assistant
+   --------------------------------
+   Version 2.0
 """
+
+
+def _beep(frequency: int | None = None, duration_ms: int = 400):
+    """Audible alert on any OS (system sound on Windows, terminal bell elsewhere)."""
+    try:
+        if winsound is not None:
+            if frequency:
+                winsound.Beep(frequency, duration_ms)
+            else:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        else:
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+            time.sleep(duration_ms / 1000)
+    except Exception:
+        pass
 
 
 class Nova:
@@ -62,7 +85,8 @@ class Nova:
     the threading model between GUI and voice listener.
     """
 
-    def __init__(self, config: dict, gui: NovaGUI | None = None, text_mode: bool = False):
+    def __init__(self, config: dict, gui: NovaGUI | None = None, text_mode: bool = False,
+                 alarm_manager: AlarmManager | None = None):
         self.config = config
         self.gui = gui
         self.text_mode = text_mode
@@ -73,10 +97,13 @@ class Nova:
 
         # Initialize core modules
         logger.info("Initializing Nova modules...")
-        self.alarm_manager = config.get("alarm_manager") # Passed from main
+        # Kept out of `config`: config gets written back to config.json
+        # (update_preference/save_config) and an AlarmManager is not JSON serializable.
+        self.alarm_manager = alarm_manager
         self.voice = VoiceEngine(config)
         self.brain = AIBrain(config)
         self.commands = CommandHandler(config, alarm_manager=self.alarm_manager)
+        self.commands.brain = self.brain  # lets plugins reuse the live LLM backend
 
     # ──────────────────────────────────────────────────────────────────────────
     # Startup
@@ -89,6 +116,11 @@ class Nova:
         if self.config.get("greeting_enabled", True):
             greeting = get_greeting(self.config)
             self._respond(greeting, is_greeting=True)
+
+        if not self.text_mode and self.voice.microphone is None:
+            logger.warning("No microphone available. Falling back to text input mode.")
+            print("\n[!] No microphone detected - switching to text input mode.")
+            self.text_mode = True
 
         if self.text_mode:
             self._text_loop()
@@ -123,7 +155,7 @@ class Nova:
                     continue  # Keep waiting
 
                 # ── Wake Word Detected ─────────────────────────────────────
-                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                _beep()
                 self._set_status("Listening")
                 self._speak_and_show("Yes? I'm listening.", is_system=True)
                 retry_count = 0
@@ -200,38 +232,44 @@ class Nova:
         if self.gui:
             self.gui.add_message("user", user_text)
 
-        # ── Exit Check ────────────────────────────────────────────────────
-        if self.commands.is_exit_command(user_text):
-            farewell = f"Goodbye, {self.name}. Nova, signing off."
-            self._respond(farewell)
-            self.shutdown()
-            return
+        try:
+            # ── Exit Check ────────────────────────────────────────────────
+            if self.commands.is_exit_command(user_text):
+                farewell = f"Goodbye, {self.name}. Nova, signing off."
+                self._respond(farewell, user_text=user_text)
+                self.shutdown()
+                return
 
-        # ── Route to Command Handler ──────────────────────────────────────
-        response, handled = self.commands.handle(user_text)
+            # ── Clear Memory (same phrase list the command handler uses) ──
+            if self.commands.is_clear_memory_command(user_text):
+                self.brain.clear_memory()
 
-        if not handled or not response:
-            # ── Route to AI Brain ─────────────────────────────────────────
-            self._set_status("Processing")
-            response = self.brain.ask(user_text)
+            # ── Route to Command Handler ──────────────────────────────────
+            response, handled = self.commands.handle(user_text)
 
-        # Special case: memory clear
-        if "clear memory" in user_text.lower() or "forget everything" in user_text.lower():
-            self.brain.clear_memory()
+            if not handled or not response:
+                # ── Route to AI Brain ─────────────────────────────────────
+                self._set_status("Processing")
+                response = self.brain.ask(user_text)
+        except Exception:
+            # One failing command/LLM call must not kill the interaction loop.
+            logger.exception("Error while processing input")
+            response = f"I'm sorry, {self.name}. Something went wrong while processing that."
 
-        self._respond(response)
+        self._respond(response, user_text=user_text)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Response Delivery
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _respond(self, text: str, is_greeting: bool = False):
+    def _respond(self, text: str, is_greeting: bool = False, user_text: str | None = None):
         """
         Deliver a response via TTS and log it.
 
         Args:
             text (str): Response text.
             is_greeting (bool): If True, display as system message in GUI.
+            user_text (str | None): What the user said, for the conversation log.
         """
         clean_text = sanitize_text(text)
         print(f"\n[Nova]: {clean_text}\n")
@@ -247,7 +285,7 @@ class Nova:
         # Log to file
         if self.log_enabled and not is_greeting:
             try:
-                log_conversation("[user voice]", clean_text)
+                log_conversation(user_text or "[system]", clean_text)
             except Exception:
                 pass
 
@@ -266,27 +304,34 @@ class Nova:
     def on_alarm_trigger(self, trigger_type: str, label: str):
         """Callback for AlarmManager when an alarm or timer goes off."""
         logger.info(f"ALARM TRIGGERED: {trigger_type} - {label}")
-        
+
         # 1. Beep loudly
-        for _ in range(3):
-            winsound.Beep(1000, 400)
-            winsound.Beep(1500, 400)
-            
-        # 2. Alert the user
-        msg = f"Excuse me, {self.name}. Your {trigger_type} for {label} is going off now."
-        self._respond(msg)
-        
-        # 3. Update status
         self._set_status("Alert")
+        for _ in range(3):
+            _beep(1000, 400)
+            _beep(1500, 400)
+
+        # 2. Alert the user ("your timer for Timer" sounded broken for default labels)
+        if str(label).strip().lower() in ("", trigger_type.lower()):
+            msg = f"Excuse me, {self.name}. Your {trigger_type} is going off now."
+        else:
+            msg = f"Excuse me, {self.name}. Your {trigger_type} for {label} is going off now."
+        self._respond(msg)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Shutdown
     # ──────────────────────────────────────────────────────────────────────────
 
+    def stop(self):
+        """Mark Nova as stopped and stop background services (does not touch the GUI)."""
+        self.running = False
+        if self.alarm_manager:
+            self.alarm_manager.stop()
+
     def shutdown(self):
         """Gracefully stop all modules and exit."""
         logger.info("Nova shutdown initiated.")
-        self.running = False
+        self.stop()
 
         if self.gui:
             try:
@@ -317,19 +362,21 @@ def main():
     config = load_config()
     logger.info(f"Loaded config for assistant: '{config.get('assistant_name', 'Nova')}'")
 
-    gui = None
     text_mode = args.text
+    use_gui = not args.no_gui
+    if use_gui and (QApplication is None or NovaGUI is None):
+        logger.warning("PyQt6 is not installed; running without the GUI. Install it with: pip install PyQt6")
+        print("[!] PyQt6 not found - running in terminal mode (use --no-gui to silence this).")
+        use_gui = False
 
-    if not args.no_gui:
+    alarm_manager = AlarmManager()
+
+    if use_gui:
         # ── GUI Mode ──────────────────────────────────────────────────────
-        # Initialize Alarm Manager
-        alarm_manager = AlarmManager()
-        config["alarm_manager"] = alarm_manager
-
         app = QApplication(sys.argv)
         gui = NovaGUI(config)
 
-        nova = Nova(config, gui=gui, text_mode=text_mode)
+        nova = Nova(config, gui=gui, text_mode=text_mode, alarm_manager=alarm_manager)
         alarm_manager.set_callback(nova.on_alarm_trigger)
         alarm_manager.start()
 
@@ -337,8 +384,10 @@ def main():
         gui.sig_text_submit.connect(
             lambda text: threading.Thread(target=nova._handle_input, args=(text,), daemon=True).start()
         )
-        
-        # Shutdown hook
+
+        # Shutdown hooks. Closing the window must also stop Nova's own loop and the alarm
+        # service (stop() does not emit sig_shutdown, so there is no signal recursion).
+        gui.sig_shutdown.connect(nova.stop)
         gui.sig_shutdown.connect(app.quit)
 
         # Run Nova in a background thread so PyQt GUI runs on main thread
@@ -350,17 +399,17 @@ def main():
 
     else:
         # ── Terminal Mode ─────────────────────────────────────────────────
-        # Initialize Alarm Manager
-        alarm_manager = AlarmManager()
-        config["alarm_manager"] = alarm_manager
-
-        nova = Nova(config, gui=None, text_mode=text_mode)
+        nova = Nova(config, gui=None, text_mode=text_mode, alarm_manager=alarm_manager)
         alarm_manager.set_callback(nova.on_alarm_trigger)
         alarm_manager.start()
 
-        # Graceful Ctrl+C
-        signal.signal(signal.SIGINT, lambda *_: nova.shutdown())
-        nova.start()
+        # No custom SIGINT handler: replacing it with one that only sets a flag made Ctrl+C
+        # do nothing while blocked in input() (text mode). The default KeyboardInterrupt
+        # is handled below and inside the loops.
+        try:
+            nova.start()
+        except KeyboardInterrupt:
+            nova.shutdown()
 
 
 if __name__ == "__main__":
